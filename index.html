@@ -22,8 +22,8 @@
     letter-spacing: 0.5px; text-transform: uppercase; font-weight: 600;
   }
   #status-line.idle { color: #6b6b6b; }
-  #status-line.single { color: #6cf7c2; }
-  #status-line.two { color: #ffb833; }
+  #status-line.single { color: #ff5fd2; }
+  #status-line.two { color: #3bff8f; }
 
   #controls {
     position: fixed; top: 22px; right: 26px; z-index: 6;
@@ -36,7 +36,7 @@
     transition: background .2s, border-color .2s;
   }
   .pill-btn:hover { background: rgba(255,255,255,.16); border-color: rgba(255,255,255,.3); }
-  .pill-btn.active { background: rgba(108,247,194,.18); border-color: rgba(108,247,194,.5); color: #6cf7c2; }
+  .pill-btn.active { background: rgba(255,95,210,.18); border-color: rgba(255,95,210,.5); color: #ff5fd2; }
 
   #preview-wrap {
     position: fixed; bottom: 22px; right: 22px; width: 168px; height: 126px;
@@ -63,13 +63,13 @@
   #charge-ring-wrap svg { width: 110px; height: 110px; transform: rotate(-90deg); }
   #charge-ring-bg { fill: none; stroke: rgba(255,255,255,.12); stroke-width: 6; }
   #charge-ring-fg {
-    fill: none; stroke: #6cf7c2; stroke-width: 6; stroke-linecap: round;
-    filter: drop-shadow(0 0 6px rgba(108,247,194,.7));
+    fill: none; stroke: #ff5fd2; stroke-width: 6; stroke-linecap: round;
+    filter: drop-shadow(0 0 6px rgba(255,95,210,.7));
   }
   #charge-label {
     position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
     font-family: system-ui, sans-serif; font-size: 11px; letter-spacing: 1px;
-    color: #6cf7c2; text-transform: uppercase; font-weight: 600;
+    color: #ff5fd2; text-transform: uppercase; font-weight: 600;
   }
 
   #loading {
@@ -89,7 +89,7 @@
     box-shadow: 0 20px 60px rgba(0,0,0,.5);
   }
   .intro-eyebrow {
-    color: #6cf7c2; text-transform: uppercase; letter-spacing: 2px; font-size: 11px;
+    color: #ff5fd2; text-transform: uppercase; letter-spacing: 2px; font-size: 11px;
     font-weight: 600; margin: 0 0 10px;
   }
   .intro-card h2 {
@@ -102,7 +102,7 @@
   #introStartBtn { font-size: 14px; padding: 12px 28px; }
   .spinner {
     width: 34px; height: 34px; border: 3px solid rgba(255,255,255,.15);
-    border-top-color: #6cf7c2; border-radius: 50%; animation: spin 0.9s linear infinite;
+    border-top-color: #ff5fd2; border-radius: 50%; animation: spin 0.9s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -220,6 +220,19 @@ const ROT_SENSITIVITY = 4.2;
 const SCALE_SMOOTH = 0.08;
 const SCALE_MIN = 0.55, SCALE_MAX = 2.1;
 
+// Vividness controls for the gradient. Lightness is deliberately a small lift:
+// pushing it hard sends every stop toward white, which reads as pastel rather
+// than bright and turned the red stop into a salmon. Saturation carries the
+// punch instead, and additive blending on the near-black backdrop does the rest.
+const LIGHTNESS_LIFT = 0.04;
+const SATURATION_BOOST = 1.18;
+
+// Fraction of each gradient segment spent crossing between two stops. Low
+// values keep most of the sphere on a pure stop colour and squeeze the
+// in-between hues - the orange and yellow between red and green - into a
+// thin seam rather than a band of their own.
+const BAND_BLEND = 0.34;
+
 const MORPH_TEXT = 'THE SPHERE';
 const MORPH_SMOOTH = 0.06;
 const THUMBS_UP_COOLDOWN_MS = 1200;
@@ -227,11 +240,11 @@ const IDLE_INVITE_MS = 6000;
 
 const FINGER_COLORS = [
   null,                       // 0 fingers -> keep base gradient, no tint
-  new THREE.Color(0x35e6ff),  // 1
-  new THREE.Color(0xff5da2),  // 2
-  new THREE.Color(0xffb833),  // 3
-  new THREE.Color(0x9dff5c),  // 4
-  new THREE.Color(0xb98bff),  // 5
+  new THREE.Color(0xff2e4c),  // 1 - red
+  new THREE.Color(0x3bff8f),  // 2 - green
+  new THREE.Color(0xa64dff),  // 3 - purple
+  new THREE.Color(0xff5fd2),  // 4 - pink
+  new THREE.Color(0xe04bff),  // 5 - orchid
 ];
 
 /* ============================================================
@@ -313,8 +326,41 @@ const baseColors = new Float32Array(PARTICLE_COUNT * 3);
 const displayColors = new Float32Array(PARTICLE_COUNT * 3);
 
 const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-const colorTop = new THREE.Color(0x6cf7c2);    // mint
-const colorBottom = new THREE.Color(0x8a7dfb); // violet
+/* Vertical gradient stops, bottom of the sphere to top. Ordered so the hue
+   sweep is continuous: purple -> pink -> red -> green. */
+const GRADIENT_STOPS = [
+  new THREE.Color(0xa64dff), // purple
+  new THREE.Color(0xff5fd2), // pink
+  new THREE.Color(0xff2e4c), // red
+  new THREE.Color(0x3bff8f), // green
+];
+
+const _hslA = {}, _hslB = {};
+
+/* t runs 0 at the bottom of the sphere to 1 at the top.
+
+   Blends in HSL, not RGB: an RGB blend between hues this far apart dips through
+   washed-out grey at the midpoint. Hue takes the shorter way around the wheel,
+   which matters most between red and green - lerping the hue value directly
+   walks the long way down through blue and cyan, dropping two colours into the
+   palette that were never asked for. Going the short way crosses warm tones
+   instead, which sit far better beside the red. */
+function gradientAt(t) {
+  const span = t * (GRADIENT_STOPS.length - 1);
+  const i = Math.min(Math.floor(span), GRADIENT_STOPS.length - 2);
+  const f = THREE.MathUtils.smoothstep(span - i, 0.5 - BAND_BLEND / 2, 0.5 + BAND_BLEND / 2);
+  GRADIENT_STOPS[i].getHSL(_hslA);
+  GRADIENT_STOPS[i + 1].getHSL(_hslB);
+  let dh = _hslB.h - _hslA.h;
+  if (dh > 0.5) dh -= 1;
+  if (dh < -0.5) dh += 1;
+  const l = _hslA.l + (_hslB.l - _hslA.l) * f;
+  return new THREE.Color().setHSL(
+    (_hslA.h + dh * f + 1) % 1,
+    Math.min(1, (_hslA.s + (_hslB.s - _hslA.s) * f) * SATURATION_BOOST),
+    Math.min(0.70, l + LIGHTNESS_LIFT),
+  );
+}
 
 for (let i = 0; i < PARTICLE_COUNT; i++) {
   const y = 1 - (i / (PARTICLE_COUNT - 1)) * 2;
@@ -329,7 +375,7 @@ for (let i = 0; i < PARTICLE_COUNT; i++) {
   currentPositions[idx] = px; currentPositions[idx + 1] = py; currentPositions[idx + 2] = pz;
 
   const t = (y + 1) / 2;
-  const c = colorTop.clone().lerp(colorBottom, t);
+  const c = gradientAt(t);
   baseColors[idx] = c.r; baseColors[idx + 1] = c.g; baseColors[idx + 2] = c.b;
   displayColors[idx] = c.r; displayColors[idx + 1] = c.g; displayColors[idx + 2] = c.b;
 }
@@ -339,7 +385,7 @@ geometry.setAttribute('position', new THREE.BufferAttribute(currentPositions, 3)
 geometry.setAttribute('color', new THREE.BufferAttribute(displayColors, 3));
 
 const material = new THREE.PointsMaterial({
-  size: 0.055,
+  size: 0.075,
   map: makeParticleTexture(),
   transparent: true,
   depthWrite: false,
@@ -584,8 +630,8 @@ function onHandResults(results) {
 
   if (window.drawConnectors && window.HAND_CONNECTIONS) {
     hands.forEach((lm) => {
-      window.drawConnectors(pCtx, lm, window.HAND_CONNECTIONS, { color: '#6cf7c2', lineWidth: 2 });
-      window.drawLandmarks(pCtx, lm, { color: '#8a7dfb', radius: 2 });
+      window.drawConnectors(pCtx, lm, window.HAND_CONNECTIONS, { color: '#ff5fd2', lineWidth: 2 });
+      window.drawLandmarks(pCtx, lm, { color: '#a64dff', radius: 2 });
     });
   }
 
@@ -742,7 +788,7 @@ renderer.clear();
 const posAttr = geometry.getAttribute('position');
 const colorAttr = geometry.getAttribute('color');
 let smoothedFingerBlend = 0;
-const smoothedFingerColor = new THREE.Color(0x6cf7c2);
+const smoothedFingerColor = new THREE.Color(0xff5fd2);
 
 function animate() {
   requestAnimationFrame(animate);
