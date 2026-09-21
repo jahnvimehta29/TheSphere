@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Particle Field — Hand Control</title>
+<title>The Sphere — Hand-Controlled Particle Game</title>
 <style>
   html, body { margin: 0; padding: 0; overflow: hidden; background: #05060a; height: 100%; }
   #scene-canvas { position: relative; z-index: 1; display: block; }
@@ -127,15 +127,15 @@
 
 <div id="intro-overlay">
   <div class="intro-card">
-    <p class="intro-eyebrow">Maison Thai</p>
-    <h2>Enjoying the Thai cuisine so far? 🌶️</h2>
-    <p class="intro-body">While you wait for your food (or just for the fun of it) — let's play with something a little different.</p>
+    <p class="intro-eyebrow">The Sphere</p>
+    <h2>Ready to play? 🔮</h2>
+    <p class="intro-body">No controller, no keyboard — just your hands. Everything you do to the sphere, you do in the air.</p>
     <ul class="intro-list">
       <li>✋ Move your hand — drag &amp; spin the sphere</li>
       <li>🤏 Pinch and hold — charge up a burst, then let go</li>
       <li>🙌 Show two hands — spread to grow it, bring together to shrink it</li>
       <li>🖐️ Change how many fingers you hold up — shifts the colors</li>
-      <li>👍 Thumbs up — morph the particles into our name</li>
+      <li>👍 Thumbs up — morph the particles into the title</li>
     </ul>
     <p class="intro-body" style="margin-bottom:22px;">Show your hand to the camera and move your fingers — watch the magic happen ✨</p>
     <button id="introStartBtn" class="pill-btn active">Let's Play →</button>
@@ -152,7 +152,7 @@
 <div id="error-banner"></div>
 
 <div id="title">
-  <h1>Particle Field</h1>
+  <h1>The Sphere</h1>
   <p>One hand — drag to move &amp; spin. Pinch and hold — charge a burst. Two hands — spread to grow, close to shrink. Finger count — shifts color. Thumbs up — morphs into text.</p>
   <div id="status-line" class="idle">No hand detected</div>
 </div>
@@ -220,7 +220,7 @@ const ROT_SENSITIVITY = 4.2;
 const SCALE_SMOOTH = 0.08;
 const SCALE_MIN = 0.55, SCALE_MAX = 2.1;
 
-const MORPH_TEXT = 'MAISON THAI';
+const MORPH_TEXT = 'THE SPHERE';
 const MORPH_SMOOTH = 0.06;
 const THUMBS_UP_COOLDOWN_MS = 1200;
 const IDLE_INVITE_MS = 6000;
@@ -281,7 +281,14 @@ function sampleTextPoints(text, canvasW, canvasH, fontPx, step) {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, canvasW, canvasH);
   ctx.fillStyle = '#fff';
-  ctx.font = `bold ${fontPx}px Georgia, 'Times New Roman', serif`;
+  // Shrink the font if the string would overrun the canvas: fillText does not
+  // wrap or scale, it just clips, which would silently lop the outer letters
+  // off the morph target. Leave a small margin so glyph overhang survives too.
+  const fontFor = (px) => `bold ${px}px Georgia, 'Times New Roman', serif`;
+  ctx.font = fontFor(fontPx);
+  const maxWidth = canvasW * 0.92;
+  const measured = ctx.measureText(text).width;
+  if (measured > maxWidth) ctx.font = fontFor(Math.floor(fontPx * (maxWidth / measured)));
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, canvasW / 2, canvasH / 2);
@@ -289,7 +296,9 @@ function sampleTextPoints(text, canvasW, canvasH, fontPx, step) {
   const points = [];
   for (let y = 0; y < canvasH; y += step) {
     for (let x = 0; x < canvasW; x += step) {
-      if (data[(y * canvasW + x) * 4 + 3] > 128) points.push({ x, y });
+      // Test red, not alpha: the black backdrop above is opaque, so every
+      // pixel has alpha 255 and an alpha test would match the entire canvas.
+      if (data[(y * canvasW + x) * 4] > 128) points.push({ x, y });
     }
   }
   return points;
@@ -354,8 +363,12 @@ const morphPositions = new Float32Array(PARTICLE_COUNT * 3);
   }
   const worldWidth = 5.6;
   const scale = worldWidth / canvasW;
+  // Spread the particles across the whole point cloud. Indexing by i alone
+  // would take a raster-order prefix, filling only the top of the glyphs
+  // whenever the cloud holds more points than we have particles.
+  const stride = Math.max(1, Math.floor(textPoints.length / PARTICLE_COUNT));
   for (let i = 0; i < PARTICLE_COUNT; i++) {
-    const p = textPoints[i % textPoints.length];
+    const p = textPoints[(i * stride) % textPoints.length];
     const idx = i * 3;
     morphPositions[idx]     = (p.x - canvasW / 2) * scale;
     morphPositions[idx + 1] = -(p.y - canvasH / 2) * scale;
@@ -734,7 +747,7 @@ const smoothedFingerColor = new THREE.Color(0x6cf7c2);
 function animate() {
   requestAnimationFrame(animate);
 
-  /* --- shape morph blend (sphere <-> "MAISON THAI" text) --- */
+  /* --- shape morph blend (sphere <-> "THE SPHERE" text) --- */
   morphBlend += ((morphActive ? 1 : 0) - morphBlend) * MORPH_SMOOTH;
 
   /* --- per-particle spring/explosion physics, blended toward the morph target --- */

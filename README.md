@@ -1,9 +1,8 @@
 # The Sphere
 
-An interactive particle-field installation controlled entirely by hand gestures
-through a webcam. Built as a single self-contained HTML file — no build step,
-no dependencies to install.
-
+A hand-controlled particle game. You steer a field of 3000 particles with
+nothing but your hands in front of a webcam — no controller, no keyboard.
+Built as a single self-contained HTML file: no build step, nothing to install.
 
 ## Gestures
 
@@ -13,7 +12,7 @@ no dependencies to install.
 | Pinch and hold, then release | Charge a burst, then explode the particles |
 | Two hands, spread or close | Grow or shrink the sphere |
 | Change extended finger count (1–5) | Shifts the particle colour |
-| Thumbs up | Morph the particles into the text "MAISON THAI" |
+| Thumbs up | Morph the particles into the text "THE SPHERE" |
 
 Sound is synthesised live with the Web Audio API — charge whine, explosion
 noise burst, and chimes. There are no audio files.
