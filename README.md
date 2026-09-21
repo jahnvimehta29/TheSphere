@@ -8,11 +8,21 @@ Built as a single self-contained HTML file: no build step, nothing to install.
 
 | Gesture | Effect |
 | --- | --- |
-| Move one hand | Drag and spin the sphere |
-| Pinch and hold, then release | Charge a burst, then explode the particles |
-| Two hands, spread or close | Grow or shrink the sphere |
-| Change extended finger count (1–5) | Shifts the particle colour |
-| Thumbs up | Morph the particles into the text "THE SPHERE" |
+| Open hand, moved around | Drag and spin the sphere |
+| Point one finger | Write in the air — your strokes stay on screen |
+| Clench a fist, then open it | Charge a burst, then detonate |
+| Show two hands | Two spheres, one riding each hand |
+| Spread hands apart | Both spheres grow and separate |
+| Bring hands together | Spheres shrink, converge, and collide |
+| Two fists, then open both | A harder two-handed burst |
+| Thumb out | Particles string into a bar along the thumb and follow it |
+
+Writing accumulates, so you can spell out a whole word one letter at a time.
+Clear it with the **Clear Writing** button or the `c` key.
+
+A thumb held vertically lines the particles up vertically, horizontally lines
+them up horizontally, and any angle in between works too — the bar simply
+points where the thumb points.
 
 Sound is synthesised live with the Web Audio API — charge whine, explosion
 noise burst, and chimes. There are no audio files.

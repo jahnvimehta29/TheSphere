@@ -54,7 +54,7 @@
   }
   body.webcam-bg-on #preview-canvas { display: none; }
 
-  /* Pinch charge ring, centered on screen */
+  /* Fist charge ring, centered on screen */
   #charge-ring-wrap {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
     z-index: 4; opacity: 0; transition: opacity .2s ease; pointer-events: none;
@@ -84,7 +84,7 @@
     font-family: system-ui, -apple-system, sans-serif;
   }
   .intro-card {
-    max-width: 440px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.12);
+    max-width: 460px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.12);
     border-radius: 16px; padding: 36px 32px; text-align: center; color: #eae8e2;
     box-shadow: 0 20px 60px rgba(0,0,0,.5);
   }
@@ -131,13 +131,13 @@
     <h2>Ready to play? 🔮</h2>
     <p class="intro-body">No controller, no keyboard — just your hands. Everything you do to the sphere, you do in the air.</p>
     <ul class="intro-list">
-      <li>✋ Move your hand — drag &amp; spin the sphere</li>
-      <li>🤏 Pinch and hold — charge up a burst, then let go</li>
-      <li>🙌 Show two hands — spread to grow it, bring together to shrink it</li>
-      <li>🖐️ Change how many fingers you hold up — shifts the colors</li>
-      <li>👍 Thumbs up — morph the particles into the title</li>
+      <li>☝️ Point one finger — write in the air, your strokes stay on screen</li>
+      <li>✊ Make a fist to charge, open it to burst</li>
+      <li>🙌 Show two hands — two spheres, one per hand</li>
+      <li>↔️ Spread your hands to grow them, bring them together to collide</li>
+      <li>👍 Stick your thumb out — particles line up along it and follow it</li>
     </ul>
-    <p class="intro-body" style="margin-bottom:22px;">Show your hand to the camera and move your fingers — watch the magic happen ✨</p>
+    <p class="intro-body" style="margin-bottom:22px;">Show your hand to the camera and start moving ✨</p>
     <button id="introStartBtn" class="pill-btn active">Let's Play →</button>
   </div>
 </div>
@@ -153,11 +153,12 @@
 
 <div id="title">
   <h1>The Sphere</h1>
-  <p>One hand — drag to move &amp; spin. Pinch and hold — charge a burst. Two hands — spread to grow, close to shrink. Finger count — shifts color. Thumbs up — morphs into text.</p>
+  <p>One finger — write in the air. Fist — charge, then open to burst. Two hands — two spheres; spread to grow, close to collide. Thumb out — particles align along it.</p>
   <div id="status-line" class="idle">No hand detected</div>
 </div>
 
 <div id="controls">
+  <button id="clearInkBtn" class="pill-btn">Clear Writing</button>
   <button id="webcamBgBtn" class="pill-btn">Camera Background</button>
 </div>
 
@@ -204,21 +205,61 @@ window.__particleAppReady = true; // Three.js loaded - the watchdog above can st
 /* ============================================================
    CONFIG
    ============================================================ */
-const PARTICLE_COUNT = 3000;
-const SPHERE_RADIUS = 2.0;
+const CLUSTER_COUNT = 2;              // one sphere per hand
+const PARTICLES_PER_CLUSTER = 1500;   // 3000 total, same density as a single sphere
+const SPHERE_RADIUS = 1.15;
 
-const SPRING_K = 0.02;      // per-frame spring pulling particles back to their sphere position
+const SPRING_K = 0.02;      // per-frame spring pulling particles back to their home position
 const DAMPING = 0.93;       // velocity damping per frame (higher = less friction)
 const EXPLOSION_FORCE = 6.5;
 
 const CHARGE_DURATION_MS = 1100;
-const PINCH_THRESHOLD = 0.45;      // normalized thumb-index distance below which we call it a pinch
-const MIN_CHARGE_TO_FIRE = 0.04;   // ignore accidental micro-taps
+const MIN_CHARGE_TO_FIRE = 0.04;   // ignore accidental micro-clenches
 
-const MOVE_SMOOTH = 0.1;
+const MOVE_SMOOTH = 0.12;
 const ROT_SENSITIVITY = 4.2;
+const ROT_SMOOTH = 0.25;
 const SCALE_SMOOTH = 0.08;
-const SCALE_MIN = 0.55, SCALE_MAX = 2.1;
+const SCALE_MIN = 0.42, SCALE_MAX = 1.30;
+
+// Distance between the two hands, in MediaPipe's normalized units, mapped to
+// sphere size. Below COLLIDE_DIST the two spheres are touching and detonate.
+const HAND_DIST_MIN = 0.12, HAND_DIST_MAX = 0.62;
+const COLLIDE_DIST = 0.17;
+const COLLIDE_COOLDOWN_MS = 900;
+
+const PLANE_HALF_W = 3.1, PLANE_HALF_H = 1.9;  // world extent the camera frame maps onto
+
+// A lone sphere gets to be bigger than either of the two-handed pair, which
+// have to stay small enough to read as separate objects when held apart.
+const SINGLE_SCALE = 1.55;
+
+// While writing, the spheres collapse to a small marker that rides along with
+// the hand. At full size they sit directly under the fingertip and swallow the
+// letters being drawn.
+const WRITE_SCALE = 0.4;
+
+const ALIGN_SMOOTH = 0.12;
+const ALIGN_LENGTH = 4.4;      // world length of the aligned bar
+const ALIGN_THICKNESS = 0.24;
+
+const INK_MAX_POINTS = 26000;
+const INK_SPACING = 0.03;      // world gap between deposited ink points
+const INK_MIN_MOVE = 0.004;    // ignore jitter smaller than this
+const INK_COLOR = new THREE.Color(0xff5fd2);
+// Ink sits nearer the camera than the spheres so writing always reads on top.
+const INK_Z = 0.7;
+
+const IDLE_INVITE_MS = 6000;
+
+/* Vertical gradient stops, bottom of the sphere to top. Ordered so the hue
+   sweep is continuous: purple -> pink -> red -> green. */
+const GRADIENT_STOPS = [
+  new THREE.Color(0xa64dff), // purple
+  new THREE.Color(0xff5fd2), // pink
+  new THREE.Color(0xff2e4c), // red
+  new THREE.Color(0x3bff8f), // green
+];
 
 // Vividness controls for the gradient. Lightness is deliberately a small lift:
 // pushing it hard sends every stop toward white, which reads as pastel rather
@@ -233,19 +274,32 @@ const SATURATION_BOOST = 1.18;
 // thin seam rather than a band of their own.
 const BAND_BLEND = 0.34;
 
-const MORPH_TEXT = 'THE SPHERE';
-const MORPH_SMOOTH = 0.06;
-const THUMBS_UP_COOLDOWN_MS = 1200;
-const IDLE_INVITE_MS = 6000;
+const _hslA = {}, _hslB = {};
 
-const FINGER_COLORS = [
-  null,                       // 0 fingers -> keep base gradient, no tint
-  new THREE.Color(0xff2e4c),  // 1 - red
-  new THREE.Color(0x3bff8f),  // 2 - green
-  new THREE.Color(0xa64dff),  // 3 - purple
-  new THREE.Color(0xff5fd2),  // 4 - pink
-  new THREE.Color(0xe04bff),  // 5 - orchid
-];
+/* t runs 0 at the bottom of the sphere to 1 at the top.
+
+   Blends in HSL, not RGB: an RGB blend between hues this far apart dips through
+   washed-out grey at the midpoint. Hue takes the shorter way around the wheel,
+   which matters most between red and green - lerping the hue value directly
+   walks the long way down through blue and cyan, dropping two colours into the
+   palette that were never asked for. Going the short way crosses warm tones
+   instead, which sit far better beside the red. */
+function gradientAt(t) {
+  const span = t * (GRADIENT_STOPS.length - 1);
+  const i = Math.min(Math.floor(span), GRADIENT_STOPS.length - 2);
+  const f = THREE.MathUtils.smoothstep(span - i, 0.5 - BAND_BLEND / 2, 0.5 + BAND_BLEND / 2);
+  GRADIENT_STOPS[i].getHSL(_hslA);
+  GRADIENT_STOPS[i + 1].getHSL(_hslB);
+  let dh = _hslB.h - _hslA.h;
+  if (dh > 0.5) dh -= 1;
+  if (dh < -0.5) dh += 1;
+  const l = _hslA.l + (_hslB.l - _hslA.l) * f;
+  return new THREE.Color().setHSL(
+    (_hslA.h + dh * f + 1) % 1,
+    Math.min(1, (_hslA.s + (_hslB.s - _hslA.s) * f) * SATURATION_BOOST),
+    Math.min(0.70, l + LIGHTNESS_LIFT),
+  );
+}
 
 /* ============================================================
    THREE.JS SCENE SETUP
@@ -283,162 +337,165 @@ function makeParticleTexture() {
   return new THREE.CanvasTexture(c);
 }
 
-/* Samples a text string into a cloud of 2D points by rasterizing it to an
-   offscreen canvas and picking every opaque-enough pixel (on a grid, so the
-   point cloud stays even rather than pixel-dense). Used to build the morph
-   target shape for the thumbs-up gesture. */
-function sampleTextPoints(text, canvasW, canvasH, fontPx, step) {
-  const c = document.createElement('canvas');
-  c.width = canvasW; c.height = canvasH;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvasW, canvasH);
-  ctx.fillStyle = '#fff';
-  // Shrink the font if the string would overrun the canvas: fillText does not
-  // wrap or scale, it just clips, which would silently lop the outer letters
-  // off the morph target. Leave a small margin so glyph overhang survives too.
-  const fontFor = (px) => `bold ${px}px Georgia, 'Times New Roman', serif`;
-  ctx.font = fontFor(fontPx);
-  const maxWidth = canvasW * 0.92;
-  const measured = ctx.measureText(text).width;
-  if (measured > maxWidth) ctx.font = fontFor(Math.floor(fontPx * (maxWidth / measured)));
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, canvasW / 2, canvasH / 2);
-  const data = ctx.getImageData(0, 0, canvasW, canvasH).data;
-  const points = [];
-  for (let y = 0; y < canvasH; y += step) {
-    for (let x = 0; x < canvasW; x += step) {
-      // Test red, not alpha: the black backdrop above is opaque, so every
-      // pixel has alpha 255 and an alpha test would match the entire canvas.
-      if (data[(y * canvasW + x) * 4] > 128) points.push({ x, y });
-    }
-  }
-  return points;
-}
-
-/* ---- Build the particle sphere using a Fibonacci (even) distribution ---- */
-const homePositions = new Float32Array(PARTICLE_COUNT * 3);
-const currentPositions = new Float32Array(PARTICLE_COUNT * 3);
-const offsets = new Float32Array(PARTICLE_COUNT * 3);   // displacement from home (explosion physics)
-const velocities = new Float32Array(PARTICLE_COUNT * 3);
-const baseColors = new Float32Array(PARTICLE_COUNT * 3);
-const displayColors = new Float32Array(PARTICLE_COUNT * 3);
-
-const goldenAngle = Math.PI * (3 - Math.sqrt(5));
-/* Vertical gradient stops, bottom of the sphere to top. Ordered so the hue
-   sweep is continuous: purple -> pink -> red -> green. */
-const GRADIENT_STOPS = [
-  new THREE.Color(0xa64dff), // purple
-  new THREE.Color(0xff5fd2), // pink
-  new THREE.Color(0xff2e4c), // red
-  new THREE.Color(0x3bff8f), // green
-];
-
-const _hslA = {}, _hslB = {};
-
-/* t runs 0 at the bottom of the sphere to 1 at the top.
-
-   Blends in HSL, not RGB: an RGB blend between hues this far apart dips through
-   washed-out grey at the midpoint. Hue takes the shorter way around the wheel,
-   which matters most between red and green - lerping the hue value directly
-   walks the long way down through blue and cyan, dropping two colours into the
-   palette that were never asked for. Going the short way crosses warm tones
-   instead, which sit far better beside the red. */
-function gradientAt(t) {
-  const span = t * (GRADIENT_STOPS.length - 1);
-  const i = Math.min(Math.floor(span), GRADIENT_STOPS.length - 2);
-  const f = THREE.MathUtils.smoothstep(span - i, 0.5 - BAND_BLEND / 2, 0.5 + BAND_BLEND / 2);
-  GRADIENT_STOPS[i].getHSL(_hslA);
-  GRADIENT_STOPS[i + 1].getHSL(_hslB);
-  let dh = _hslB.h - _hslA.h;
-  if (dh > 0.5) dh -= 1;
-  if (dh < -0.5) dh += 1;
-  const l = _hslA.l + (_hslB.l - _hslA.l) * f;
-  return new THREE.Color().setHSL(
-    (_hslA.h + dh * f + 1) % 1,
-    Math.min(1, (_hslA.s + (_hslB.s - _hslA.s) * f) * SATURATION_BOOST),
-    Math.min(0.70, l + LIGHTNESS_LIFT),
-  );
-}
-
-for (let i = 0; i < PARTICLE_COUNT; i++) {
-  const y = 1 - (i / (PARTICLE_COUNT - 1)) * 2;
-  const radiusAtY = Math.sqrt(Math.max(0, 1 - y * y));
-  const theta = goldenAngle * i;
-  const x = Math.cos(theta) * radiusAtY;
-  const z = Math.sin(theta) * radiusAtY;
-
-  const px = x * SPHERE_RADIUS, py = y * SPHERE_RADIUS, pz = z * SPHERE_RADIUS;
-  const idx = i * 3;
-  homePositions[idx] = px; homePositions[idx + 1] = py; homePositions[idx + 2] = pz;
-  currentPositions[idx] = px; currentPositions[idx + 1] = py; currentPositions[idx + 2] = pz;
-
-  const t = (y + 1) / 2;
-  const c = gradientAt(t);
-  baseColors[idx] = c.r; baseColors[idx + 1] = c.g; baseColors[idx + 2] = c.b;
-  displayColors[idx] = c.r; displayColors[idx + 1] = c.g; displayColors[idx + 2] = c.b;
-}
-
-const geometry = new THREE.BufferGeometry();
-geometry.setAttribute('position', new THREE.BufferAttribute(currentPositions, 3));
-geometry.setAttribute('color', new THREE.BufferAttribute(displayColors, 3));
+const particleTexture = makeParticleTexture();
 
 const material = new THREE.PointsMaterial({
   size: 0.075,
-  map: makeParticleTexture(),
+  map: particleTexture,
   transparent: true,
   depthWrite: false,
   vertexColors: true,
   blending: THREE.AdditiveBlending,
 });
 
-const points = new THREE.Points(geometry, material);
-const sphereGroup = new THREE.Group();
-sphereGroup.add(points);
-scene.add(sphereGroup);
+/* ============================================================
+   PARTICLE CLUSTERS
 
-/* ---- Morph target: the same 3000 particles rearranged to spell MORPH_TEXT ---- */
-const morphPositions = new Float32Array(PARTICLE_COUNT * 3);
-(function buildMorphPositions() {
-  const canvasW = 900, canvasH = 220;
-  const textPoints = sampleTextPoints(MORPH_TEXT, canvasW, canvasH, 100, 3);
-  if (textPoints.length === 0) {
-    morphPositions.set(homePositions); // font failed to rasterize - fall back to the sphere shape
-    return;
-  }
-  const worldWidth = 5.6;
-  const scale = worldWidth / canvasW;
-  // Spread the particles across the whole point cloud. Indexing by i alone
-  // would take a raster-order prefix, filling only the top of the glyphs
-  // whenever the cloud holds more points than we have particles.
-  const stride = Math.max(1, Math.floor(textPoints.length / PARTICLE_COUNT));
-  for (let i = 0; i < PARTICLE_COUNT; i++) {
-    const p = textPoints[(i * stride) % textPoints.length];
-    const idx = i * 3;
-    morphPositions[idx]     = (p.x - canvasW / 2) * scale;
-    morphPositions[idx + 1] = -(p.y - canvasH / 2) * scale;
-    morphPositions[idx + 2] = (Math.random() - 0.5) * 0.25;
-  }
-})();
+   Two independent spheres rather than one. Each lives in its own Group so the
+   GPU handles its position, rotation and scale, and the per-particle spring
+   physics below stays in cheap local space. With one hand on screen both
+   clusters are driven to the same point, so they read as a single denser
+   sphere; with two hands they split, one per hand.
+   ============================================================ */
+const clusters = [];
 
-/* Explode: injects an outward velocity impulse into every particle, scaled
-   by how long the pinch was held (0..1). The spring/damping system in the
-   render loop naturally pulls everything back into shape afterwards. */
-function explode(power) {
-  for (let i = 0; i < PARTICLE_COUNT; i++) {
-    const idx = i * 3;
-    // bias direction outward from sphere center, with randomness so the
+function makeCluster(seedOffset) {
+  const n = PARTICLES_PER_CLUSTER;
+  const home = new Float32Array(n * 3);      // rest position on the sphere
+  const align = new Float32Array(n * 3);     // rest position as a straight bar
+  const cur = new Float32Array(n * 3);       // what actually gets rendered
+  const off = new Float32Array(n * 3);       // displacement from rest (explosion physics)
+  const vel = new Float32Array(n * 3);
+  const col = new Float32Array(n * 3);
+
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    // Fibonacci distribution gives an even spread with no clustering at the poles
+    const y = 1 - (i / (n - 1)) * 2;
+    const radiusAtY = Math.sqrt(Math.max(0, 1 - y * y));
+    const theta = goldenAngle * (i + seedOffset);
+    const x = Math.cos(theta) * radiusAtY;
+    const z = Math.sin(theta) * radiusAtY;
+
+    const k = i * 3;
+    home[k] = x * SPHERE_RADIUS;
+    home[k + 1] = y * SPHERE_RADIUS;
+    home[k + 2] = z * SPHERE_RADIUS;
+    cur[k] = home[k]; cur[k + 1] = home[k + 1]; cur[k + 2] = home[k + 2];
+
+    // The bar runs along local X. Orienting it to the thumb is done by rotating
+    // the whole group, so this target never has to be rebuilt.
+    align[k] = ((i / (n - 1)) - 0.5) * ALIGN_LENGTH;
+    align[k + 1] = (Math.random() - 0.5) * ALIGN_THICKNESS;
+    align[k + 2] = (Math.random() - 0.5) * ALIGN_THICKNESS;
+
+    const c = gradientAt((y + 1) / 2);
+    col[k] = c.r; col[k + 1] = c.g; col[k + 2] = c.b;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(cur, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+
+  const pts = new THREE.Points(geo, material);
+  pts.frustumCulled = false; // an explosion can throw particles past the culling bounds
+
+  const group = new THREE.Group();
+  group.add(pts);
+  scene.add(group);
+
+  return {
+    n, home, align, cur, off, vel, geo, group,
+    target: new THREE.Vector3(0, 0, 0),
+    scale: 1, targetScale: 1, alignBlend: 0,
+  };
+}
+
+for (let c = 0; c < CLUSTER_COUNT; c++) clusters.push(makeCluster(c * 0.5));
+
+/* Injects an outward velocity impulse into every particle of a cluster, scaled
+   by how long the fist was held (0..1). The spring/damping system in the render
+   loop naturally pulls everything back into shape afterwards. */
+function explodeCluster(cl, power) {
+  for (let i = 0; i < cl.n; i++) {
+    const k = i * 3;
+    // bias direction outward from the cluster centre, with randomness so the
     // burst looks chaotic rather than a perfectly uniform "puff"
-    const hx = homePositions[idx], hy = homePositions[idx + 1], hz = homePositions[idx + 2];
+    const hx = cl.home[k], hy = cl.home[k + 1], hz = cl.home[k + 2];
     const len = Math.sqrt(hx * hx + hy * hy + hz * hz) || 1;
-    const rx = (Math.random() - 0.5) * 0.6;
-    const ry = (Math.random() - 0.5) * 0.6;
-    const rz = (Math.random() - 0.5) * 0.6;
-    velocities[idx]     += ((hx / len) + rx) * EXPLOSION_FORCE * power;
-    velocities[idx + 1] += ((hy / len) + ry) * EXPLOSION_FORCE * power;
-    velocities[idx + 2] += ((hz / len) + rz) * EXPLOSION_FORCE * power;
+    cl.vel[k]     += ((hx / len) + (Math.random() - 0.5) * 0.6) * EXPLOSION_FORCE * power;
+    cl.vel[k + 1] += ((hy / len) + (Math.random() - 0.5) * 0.6) * EXPLOSION_FORCE * power;
+    cl.vel[k + 2] += ((hz / len) + (Math.random() - 0.5) * 0.6) * EXPLOSION_FORCE * power;
   }
+}
+
+function explodeAll(power) {
+  for (const cl of clusters) explodeCluster(cl, power);
+}
+
+/* ============================================================
+   AIR WRITING (ink trail)
+
+   Every point the fingertip passes through is deposited into one long buffer
+   and simply never removed, so finished letters stay lit while you write the
+   next one. Gaps between frames are filled in, otherwise fast strokes come out
+   as dotted lines rather than continuous ones.
+   ============================================================ */
+const inkPositions = new Float32Array(INK_MAX_POINTS * 3);
+const inkColors = new Float32Array(INK_MAX_POINTS * 3);
+let inkCount = 0;
+let lastInkX = null, lastInkY = null;
+
+const inkGeometry = new THREE.BufferGeometry();
+inkGeometry.setAttribute('position', new THREE.BufferAttribute(inkPositions, 3));
+inkGeometry.setAttribute('color', new THREE.BufferAttribute(inkColors, 3));
+inkGeometry.setDrawRange(0, 0);
+
+const inkMaterial = new THREE.PointsMaterial({
+  size: 0.07,
+  map: particleTexture,
+  transparent: true,
+  depthWrite: false,
+  vertexColors: true,
+  blending: THREE.AdditiveBlending,
+});
+const inkPoints = new THREE.Points(inkGeometry, inkMaterial);
+inkPoints.frustumCulled = false;
+scene.add(inkPoints);
+
+function pushInk(x, y) {
+  if (inkCount >= INK_MAX_POINTS) return;
+  const k = inkCount * 3;
+  inkPositions[k] = x; inkPositions[k + 1] = y; inkPositions[k + 2] = INK_Z;
+  inkColors[k] = INK_COLOR.r; inkColors[k + 1] = INK_COLOR.g; inkColors[k + 2] = INK_COLOR.b;
+  inkCount++;
+}
+
+function drawInkTo(x, y) {
+  if (lastInkX === null) {
+    pushInk(x, y);
+  } else {
+    const dx = x - lastInkX, dy = y - lastInkY;
+    const dist = Math.hypot(dx, dy);
+    if (dist < INK_MIN_MOVE) return;   // holding still should not pile up points
+    const steps = Math.min(200, Math.max(1, Math.round(dist / INK_SPACING)));
+    for (let s = 1; s <= steps; s++) pushInk(lastInkX + dx * (s / steps), lastInkY + dy * (s / steps));
+  }
+  lastInkX = x; lastInkY = y;
+  inkGeometry.setDrawRange(0, inkCount);
+  inkGeometry.getAttribute('position').needsUpdate = true;
+  inkGeometry.getAttribute('color').needsUpdate = true;
+}
+
+// Lifting the finger ends the stroke, so the next one does not get joined to
+// this one by a long straight line across the screen.
+function endStroke() { lastInkX = null; lastInkY = null; }
+
+function clearInk() {
+  inkCount = 0;
+  endStroke();
+  inkGeometry.setDrawRange(0, 0);
+  AudioEngine.pop();
 }
 
 /* ============================================================
@@ -527,32 +584,69 @@ const AudioEngine = (() => {
 })();
 
 /* ============================================================
+   GESTURE RECOGNITION
+   ============================================================ */
+function landmarkDist(a, b) {
+  const dx = a.x - b.x, dy = a.y - b.y, dz = (a.z || 0) - (b.z || 0);
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+/* Rough, rotation-tolerant heuristic: a finger counts as "extended" if its
+   tip sits noticeably farther from the wrist than its base knuckle does.
+   Not anatomically perfect, but good enough for a live demo. */
+function getFingerStates(lm) {
+  const wrist = lm[0];
+  const fingers = [[8, 5], [12, 9], [16, 13], [20, 17]]; // index, middle, ring, pinky
+  const extended = fingers.map(([tipIdx, mcpIdx]) =>
+    landmarkDist(lm[tipIdx], wrist) > landmarkDist(lm[mcpIdx], wrist) * 1.15);
+  const thumbOut = landmarkDist(lm[4], lm[17]) > landmarkDist(lm[2], lm[17]) * 1.05;
+  return { extended, thumbOut };
+}
+
+const anyExtended = (s) => s.extended.some(Boolean);
+
+// Index finger alone: the writing pose.
+const isPointing = (s) => s.extended[0] && !s.extended[1] && !s.extended[2] && !s.extended[3];
+
+// Everything curled in, thumb tucked: the charge pose.
+const isFist = (s) => !anyExtended(s) && !s.thumbOut;
+
+// Thumb out with the fingers curled, at any angle - not just thumbs-up.
+const isThumbPose = (s) => s.thumbOut && !anyExtended(s);
+
+/* Angle of the thumb from its base joint to its tip. The X axis is mirrored to
+   match the flipped camera preview, so the on-screen thumb and the particle bar
+   point the same way. Vertical thumb gives ~90 degrees, horizontal gives ~0. */
+function thumbAngle(lm) {
+  const ax = (1 - lm[4].x) - (1 - lm[2].x);
+  const ay = -(lm[4].y - lm[2].y);
+  return Math.atan2(ay, ax);
+}
+
+/* Maps a normalized MediaPipe landmark onto the world plane the spheres live on. */
+function handToWorld(p) {
+  const nx = ((1 - p.x) - 0.5) * 2;  // mirrored so moving right on camera moves right on screen
+  const ny = -(p.y - 0.5) * 2;
+  return { x: nx * PLANE_HALF_W, y: ny * PLANE_HALF_H, nx, ny };
+}
+
+/* ============================================================
    HAND TRACKING STATE
    ============================================================ */
-let numHands = 0;
-let mode = 'idle'; // 'idle' | 'single' | 'two'
+let mode = 'idle';           // 'idle' | 'single' | 'two'
+let statusDetail = '';
 
-// single-hand move/rotate
-let singleTargetPos = new THREE.Vector3(0, 0, 0);
+let spinX = 0, spinY = 0;
 let prevHandNX = null, prevHandNY = null;
 
-// pinch / charge
-let isPinching = false;
-let pinchStartTime = 0;
+let fistCharging = false;
+let fistStartTime = 0;
 let chargeLevel = 0;
-let fingerCount = 0;
 
-// two-hand scale
-let targetScale = 1;
-let baseScale = 1;
+let alignActive = false;
+let alignAngle = 0;
 
-// thumbs-up shape morph
-let morphActive = false;
-let morphBlend = 0;
-let thumbsUpHeld = false;
-let lastThumbsUpToggle = 0;
-
-// idle "come play" invitation
+let lastCollideTime = 0;
 let lastHandSeenTime = performance.now();
 
 const statusEl = document.getElementById('status-line');
@@ -569,49 +663,24 @@ function showError(msg) {
   loadingEl.style.display = 'none';
 }
 
-function landmarkDist(a, b) {
-  const dx = a.x - b.x, dy = a.y - b.y, dz = (a.z || 0) - (b.z || 0);
-  return Math.sqrt(dx * dx + dy * dy + dz * dz);
-}
-
-/* Rough, rotation-tolerant heuristic: a finger counts as "extended" if its
-   tip sits noticeably farther from the wrist than its base knuckle does.
-   Not anatomically perfect, but good enough for a live demo. */
-function getFingerStates(lm) {
-  const wrist = lm[0];
-  const fingers = [[8, 5], [12, 9], [16, 13], [20, 17]];
-  const extended = fingers.map(([tipIdx, mcpIdx]) =>
-    landmarkDist(lm[tipIdx], wrist) > landmarkDist(lm[mcpIdx], wrist) * 1.15);
-  const thumbOut = landmarkDist(lm[4], lm[17]) > landmarkDist(lm[2], lm[17]) * 1.05;
-  return { extended, thumbOut };
-}
-
-function countExtendedFingers(states) {
-  return states.extended.filter(Boolean).length + (states.thumbOut ? 1 : 0);
-}
-
-/* Thumbs up: thumb splayed out and pointing above the wrist, while the
-   other four fingers are curled into the palm. */
-function isThumbsUp(lm, states) {
-  const othersCurled = states.extended.every((e) => !e);
-  return states.thumbOut && othersCurled && lm[4].y < lm[0].y - 0.05;
-}
-
-function handleThumbsUp(isUp) {
-  const now = performance.now();
-  if (isUp && !thumbsUpHeld && now - lastThumbsUpToggle > THUMBS_UP_COOLDOWN_MS) {
-    lastThumbsUpToggle = now;
-    morphActive = !morphActive;
-    AudioEngine.pop();
+/* Clench to charge, open to fire. Holding longer throws the particles further. */
+function handleFist(nowFist, powerMultiplier) {
+  if (nowFist && !fistCharging) {
+    fistStartTime = performance.now();
+    AudioEngine.chargeStart();
   }
-  thumbsUpHeld = isUp;
-}
-
-function mapHandToPlane(lm9) {
-  const mirroredX = 1 - lm9.x;
-  const nx = (mirroredX - 0.5) * 2; // -1..1
-  const ny = -(lm9.y - 0.5) * 2;    // -1..1
-  return { nx, ny };
+  if (nowFist) {
+    chargeLevel = Math.min(1, (performance.now() - fistStartTime) / CHARGE_DURATION_MS);
+    AudioEngine.chargeUpdate(chargeLevel);
+  } else if (fistCharging) {
+    if (chargeLevel > MIN_CHARGE_TO_FIRE) {
+      explodeAll(chargeLevel * powerMultiplier);
+      AudioEngine.explosion(chargeLevel);
+    }
+    AudioEngine.chargeStop();
+    chargeLevel = 0;
+  }
+  fistCharging = nowFist;
 }
 
 function onHandResults(results) {
@@ -624,9 +693,8 @@ function onHandResults(results) {
   if (pCanvas.height !== pCanvas.clientHeight) pCanvas.height = pCanvas.clientHeight;
   pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
 
-  const hands = results.multiHandLandmarks || [];
-  numHands = hands.length;
-  if (numHands > 0) lastHandSeenTime = performance.now();
+  const hands = (results.multiHandLandmarks || []).slice();
+  if (hands.length > 0) lastHandSeenTime = performance.now();
 
   if (window.drawConnectors && window.HAND_CONNECTIONS) {
     hands.forEach((lm) => {
@@ -635,68 +703,117 @@ function onHandResults(results) {
     });
   }
 
-  if (numHands === 1) {
+  if (hands.length === 2) {
+    mode = 'two';
+    prevHandNX = null; prevHandNY = null;
+
+    // MediaPipe does not guarantee a stable order between frames. Sorting by
+    // screen position keeps each sphere glued to the same hand instead of the
+    // pair swapping places whenever detection order flips.
+    hands.sort((a, b) => a[9].x - b[9].x);
+
+    const worldA = handToWorld(hands[0][9]);
+    const worldB = handToWorld(hands[1][9]);
+    clusters[0].target.set(worldA.x, worldA.y, 0);
+    clusters[1].target.set(worldB.x, worldB.y, 0);
+
+    const dist = Math.hypot(hands[0][9].x - hands[1][9].x, hands[0][9].y - hands[1][9].y);
+    const t = THREE.MathUtils.clamp((dist - HAND_DIST_MIN) / (HAND_DIST_MAX - HAND_DIST_MIN), 0, 1);
+    const scale = SCALE_MIN + t * (SCALE_MAX - SCALE_MIN);
+    clusters[0].targetScale = scale;
+    clusters[1].targetScale = scale;
+
+    const statesA = getFingerStates(hands[0]);
+    const statesB = getFingerStates(hands[1]);
+    const bothFists = isFist(statesA) && isFist(statesB);
+    handleFist(bothFists, 1.35); // two-handed burst hits harder
+
+    const now = performance.now();
+    if (dist < COLLIDE_DIST && now - lastCollideTime > COLLIDE_COOLDOWN_MS) {
+      lastCollideTime = now;
+      explodeAll(0.85);
+      AudioEngine.explosion(0.85);
+      statusDetail = 'collision';
+    } else {
+      statusDetail = bothFists ? 'charging' : (t > 0.6 ? 'growing' : 'closing in');
+    }
+
+    alignActive = false;
+    endStroke();
+
+  } else if (hands.length === 1) {
     mode = 'single';
     const lm = hands[0];
-    const { nx, ny } = mapHandToPlane(lm[9]);
+    const world = handToWorld(lm[9]);
+    const states = getFingerStates(lm);
 
-    const planeHalfWidth = 2.6, planeHalfHeight = 1.7;
-    singleTargetPos.set(nx * planeHalfWidth, ny * planeHalfHeight, 0);
+    const pointing = isPointing(states);
+    const thumbing = isThumbPose(states);
+    const fisted = isFist(states);
 
-    if (prevHandNX !== null) {
-      const dx = nx - prevHandNX, dy = ny - prevHandNY;
-      sphereGroup.rotation.y += dx * ROT_SENSITIVITY;
-      sphereGroup.rotation.x += -dy * ROT_SENSITIVITY;
+    // Writing: deposit ink wherever the index fingertip goes.
+    if (pointing) {
+      const tip = handToWorld(lm[8]);
+      drawInkTo(tip.x, tip.y);
+      statusDetail = 'writing';
+    } else {
+      endStroke();
     }
-    prevHandNX = nx; prevHandNY = ny;
 
-    const wrist = lm[0];
-    const handScale = Math.max(0.001, landmarkDist(wrist, lm[9]));
-    const pinchNorm = landmarkDist(lm[4], lm[8]) / handScale;
-    const nowPinching = pinchNorm < PINCH_THRESHOLD;
-
-    if (nowPinching && !isPinching) {
-      pinchStartTime = performance.now();
-      AudioEngine.chargeStart();
+    // Thumb out: particles string into a bar along the thumb and follow it.
+    if (thumbing) {
+      alignActive = true;
+      alignAngle = thumbAngle(lm);
+      const thumbWorld = handToWorld(lm[4]);
+      clusters[0].target.set(thumbWorld.x, thumbWorld.y, 0);
+      clusters[1].target.set(thumbWorld.x, thumbWorld.y, 0);
+      statusDetail = 'aligned to thumb';
+    } else {
+      alignActive = false;
+      clusters[0].target.set(world.x, world.y, 0);
+      clusters[1].target.set(world.x, world.y, 0);
     }
-    if (nowPinching) {
-      chargeLevel = Math.min(1, (performance.now() - pinchStartTime) / CHARGE_DURATION_MS);
-      AudioEngine.chargeUpdate(chargeLevel);
-    } else if (isPinching && !nowPinching) {
-      if (chargeLevel > MIN_CHARGE_TO_FIRE) {
-        explode(chargeLevel);
-        AudioEngine.explosion(chargeLevel);
+
+    const singleScale = pointing ? WRITE_SCALE : SINGLE_SCALE;
+    clusters[0].targetScale = singleScale;
+    clusters[1].targetScale = singleScale;
+
+    handleFist(fisted, 1.0);
+    if (fisted) statusDetail = 'charging';
+
+    // Spin only when the hand is open and not busy with another gesture.
+    if (!pointing && !thumbing && !fisted) {
+      if (prevHandNX !== null) {
+        spinY += (world.nx - prevHandNX) * ROT_SENSITIVITY;
+        spinX += -(world.ny - prevHandNY) * ROT_SENSITIVITY;
       }
-      AudioEngine.chargeStop();
-      chargeLevel = 0;
+      prevHandNX = world.nx; prevHandNY = world.ny;
+      statusDetail = 'steering';
+    } else {
+      prevHandNX = null; prevHandNY = null;
     }
-    isPinching = nowPinching;
 
-    const fingerStates = getFingerStates(lm);
-    fingerCount = countExtendedFingers(fingerStates);
-    handleThumbsUp(isThumbsUp(lm, fingerStates));
-  } else if (numHands === 2) {
-    mode = 'two';
-    prevHandNX = null; prevHandNY = null; // avoid a rotation jump when dropping back to 1 hand later
-    if (isPinching) { isPinching = false; chargeLevel = 0; }
-
-    const p0 = hands[0][9], p1 = hands[1][9];
-    const dist = Math.hypot(p0.x - p1.x, p0.y - p1.y);
-    const mapped = (dist - 0.15) / (0.75) ; // 0..~1
-    targetScale = THREE.MathUtils.clamp(SCALE_MIN + mapped * (SCALE_MAX - SCALE_MIN), SCALE_MIN, SCALE_MAX);
   } else {
     mode = 'idle';
     prevHandNX = null; prevHandNY = null;
-    if (isPinching) { AudioEngine.chargeStop(); isPinching = false; chargeLevel = 0; }
-    thumbsUpHeld = false;
+    clusters[0].target.set(0, 0, 0);
+    clusters[1].target.set(0, 0, 0);
+    clusters[0].targetScale = SINGLE_SCALE;
+    clusters[1].targetScale = SINGLE_SCALE;
+    handleFist(false, 1.0);
+    alignActive = false;
+    endStroke();
+    statusDetail = '';
   }
 
   if (mode === 'two' && prevMode !== 'two') AudioEngine.chime();
 
   statusEl.className = mode;
-  statusEl.textContent = mode === 'idle' ? 'No hand detected'
-    : mode === 'single' ? `Tracking 1 hand · ${fingerCount} finger${fingerCount === 1 ? '' : 's'}${morphActive ? ' · morphed' : ''}`
-    : 'Tracking 2 hands · resizing';
+  statusEl.textContent = mode === 'idle'
+    ? 'No hand detected'
+    : mode === 'single'
+      ? `One hand · ${statusDetail}`
+      : `Two spheres · ${statusDetail}`;
 }
 
 /* ============================================================
@@ -750,6 +867,9 @@ document.getElementById('introStartBtn').addEventListener('click', () => {
   startHandTracking();
 });
 
+document.getElementById('clearInkBtn').addEventListener('click', clearInk);
+window.addEventListener('keydown', (e) => { if (e.key === 'c' || e.key === 'C') clearInk(); });
+
 /* ============================================================
    FULLSCREEN WEBCAM BACKGROUND TOGGLE
    ============================================================ */
@@ -785,77 +905,62 @@ renderer.clear();
 /* ============================================================
    ANIMATION LOOP
    ============================================================ */
-const posAttr = geometry.getAttribute('position');
-const colorAttr = geometry.getAttribute('color');
-let smoothedFingerBlend = 0;
-const smoothedFingerColor = new THREE.Color(0xff5fd2);
+function updateCluster(cl) {
+  cl.alignBlend += ((alignActive ? 1 : 0) - cl.alignBlend) * ALIGN_SMOOTH;
+  const blend = cl.alignBlend;
+
+  for (let i = 0; i < cl.n; i++) {
+    const ix = i * 3, iy = ix + 1, iz = ix + 2;
+
+    // spring back toward rest, with damping
+    cl.vel[ix] = (cl.vel[ix] - SPRING_K * cl.off[ix]) * DAMPING;
+    cl.vel[iy] = (cl.vel[iy] - SPRING_K * cl.off[iy]) * DAMPING;
+    cl.vel[iz] = (cl.vel[iz] - SPRING_K * cl.off[iz]) * DAMPING;
+    cl.off[ix] += cl.vel[ix];
+    cl.off[iy] += cl.vel[iy];
+    cl.off[iz] += cl.vel[iz];
+
+    // rest position is the sphere, or the bar, or somewhere between the two
+    const bx = cl.home[ix] + (cl.align[ix] - cl.home[ix]) * blend;
+    const by = cl.home[iy] + (cl.align[iy] - cl.home[iy]) * blend;
+    const bz = cl.home[iz] + (cl.align[iz] - cl.home[iz]) * blend;
+
+    cl.cur[ix] = bx + cl.off[ix];
+    cl.cur[iy] = by + cl.off[iy];
+    cl.cur[iz] = bz + cl.off[iz];
+  }
+  cl.geo.getAttribute('position').needsUpdate = true;
+
+  cl.group.position.lerp(cl.target, MOVE_SMOOTH);
+  cl.scale += (cl.targetScale - cl.scale) * SCALE_SMOOTH;
+  cl.group.scale.setScalar(cl.scale);
+}
 
 function animate() {
   requestAnimationFrame(animate);
 
-  /* --- shape morph blend (sphere <-> "THE SPHERE" text) --- */
-  morphBlend += ((morphActive ? 1 : 0) - morphBlend) * MORPH_SMOOTH;
-
-  /* --- per-particle spring/explosion physics, blended toward the morph target --- */
-  for (let i = 0; i < PARTICLE_COUNT; i++) {
-    const ix = i * 3, iy = ix + 1, iz = ix + 2;
-    const ax = -SPRING_K * offsets[ix];
-    const ay = -SPRING_K * offsets[iy];
-    const az = -SPRING_K * offsets[iz];
-    velocities[ix] = (velocities[ix] + ax) * DAMPING;
-    velocities[iy] = (velocities[iy] + ay) * DAMPING;
-    velocities[iz] = (velocities[iz] + az) * DAMPING;
-    offsets[ix] += velocities[ix];
-    offsets[iy] += velocities[iy];
-    offsets[iz] += velocities[iz];
-
-    const bx = homePositions[ix] + (morphPositions[ix] - homePositions[ix]) * morphBlend;
-    const by = homePositions[iy] + (morphPositions[iy] - homePositions[iy]) * morphBlend;
-    const bz = homePositions[iz] + (morphPositions[iz] - homePositions[iz]) * morphBlend;
-    currentPositions[ix] = bx + offsets[ix];
-    currentPositions[iy] = by + offsets[iy];
-    currentPositions[iz] = bz + offsets[iz];
-  }
-  posAttr.needsUpdate = true;
+  if (mode === 'idle') spinY += 0.0016; // slow drift when nobody is playing
 
   /* --- idle "come play" invitation once nobody's hand has been seen for a while --- */
   const idleFor = performance.now() - lastHandSeenTime;
   const inviting = mode === 'idle' && idleFor > IDLE_INVITE_MS;
   idleHintEl.classList.toggle('visible', inviting);
 
-  /* --- group transform: move/rotate (1 hand) or scale (2 hands) or idle --- */
-  if (mode === 'single') {
-    sphereGroup.position.lerp(singleTargetPos, MOVE_SMOOTH);
-    sphereGroup.rotation.z *= 0.9;
-  } else {
-    sphereGroup.position.lerp(new THREE.Vector3(0, 0, 0), MOVE_SMOOTH * 0.6);
-    sphereGroup.rotation.y += 0.0016; // idle drift
-    sphereGroup.rotation.z = inviting ? Math.sin(performance.now() * 0.0016) * 0.1 : sphereGroup.rotation.z * 0.9;
-  }
-  const desiredScale = mode === 'two' ? targetScale : baseScale;
-  baseScale += (desiredScale - baseScale) * SCALE_SMOOTH;
-  const invitePulse = inviting ? 1 + Math.sin(performance.now() * 0.002) * 0.06 : 1;
-  const finalScale = baseScale * invitePulse;
-  sphereGroup.scale.set(finalScale, finalScale, finalScale);
+  // While aligned to the thumb the bar has to face the thumb's direction, so
+  // the free spin is eased out and rotation.z carries the thumb angle instead.
+  const targetRotX = alignActive ? 0 : spinX;
+  const targetRotY = alignActive ? 0 : spinY;
+  const targetRotZ = alignActive ? alignAngle : 0;
 
-  /* --- finger-count color tint --- */
-  const target = mode === 'single' ? FINGER_COLORS[fingerCount] : null;
-  const desiredBlend = target ? 1 : 0;
-  smoothedFingerBlend += (desiredBlend - smoothedFingerBlend) * 0.08;
-  if (target) smoothedFingerColor.lerp(target, 0.12);
-
-  if (smoothedFingerBlend > 0.001) {
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const idx = i * 3;
-      displayColors[idx]     = baseColors[idx]     * (1 - smoothedFingerBlend) + smoothedFingerColor.r * smoothedFingerBlend;
-      displayColors[idx + 1] = baseColors[idx + 1] * (1 - smoothedFingerBlend) + smoothedFingerColor.g * smoothedFingerBlend;
-      displayColors[idx + 2] = baseColors[idx + 2] * (1 - smoothedFingerBlend) + smoothedFingerColor.b * smoothedFingerBlend;
-    }
-    colorAttr.needsUpdate = true;
+  for (const cl of clusters) {
+    updateCluster(cl);
+    cl.group.rotation.x += (targetRotX - cl.group.rotation.x) * ROT_SMOOTH;
+    cl.group.rotation.y += (targetRotY - cl.group.rotation.y) * ROT_SMOOTH;
+    cl.group.rotation.z += (targetRotZ - cl.group.rotation.z) * ROT_SMOOTH;
   }
 
   /* --- charge ring UI --- */
-  if (isPinching) {
+  if (fistCharging) {
     chargeRingWrap.classList.add('visible');
     chargeRingFg.setAttribute('stroke-dashoffset', String(RING_CIRCUMFERENCE * (1 - chargeLevel)));
   } else {
