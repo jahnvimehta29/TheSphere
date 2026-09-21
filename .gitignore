@@ -1,0 +1,12 @@
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Editor / tooling
+.vscode/
+.idea/
+*.log
+
+# Node (none committed today, but npx/serve may drop these)
+node_modules/
