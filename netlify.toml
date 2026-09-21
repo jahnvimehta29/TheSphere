@@ -1,0 +1,13 @@
+# Static single-file site — nothing to build, just publish the repo root.
+[build]
+  publish = "."
+
+# The page requests webcam access. Browsers only grant getUserMedia over
+# HTTPS, which Netlify provides, but an explicit Permissions-Policy keeps
+# the camera available if the page is ever embedded in an iframe.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Permissions-Policy = "camera=(self)"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
