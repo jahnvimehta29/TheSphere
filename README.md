@@ -4,7 +4,6 @@ An interactive particle-field installation controlled entirely by hand gestures
 through a webcam. Built as a single self-contained HTML file — no build step,
 no dependencies to install.
 
-Branded for **Maison Thai** as a table-side "while you wait" experience.
 
 ## Gestures
 
