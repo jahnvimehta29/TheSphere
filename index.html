@@ -131,10 +131,10 @@
     <h2>Ready to play? 🔮</h2>
     <p class="intro-body">No controller, no keyboard — just your hands. Everything you do to the sphere, you do in the air.</p>
     <ul class="intro-list">
-      <li>☝️ Point one finger — write in the air, your strokes stay on screen</li>
-      <li>✊ Make a fist to charge, open it to burst</li>
-      <li>🙌 Show two hands — two spheres, one per hand</li>
-      <li>↔️ Spread your hands to grow them, bring them together to collide</li>
+      <li>🤏 Pinch thumb to finger — write in the air; unpinch to move between letters</li>
+      <li>✊ Curl your hand slowly — the sphere shrinks; open slowly — it grows</li>
+      <li>💥 Throw your hand open all at once — it bursts</li>
+      <li>🙌 Show two hands — two spheres; spread to grow, together to collide</li>
       <li>👍 Stick your thumb out — particles line up along it and follow it</li>
     </ul>
     <p class="intro-body" style="margin-bottom:22px;">Show your hand to the camera and start moving ✨</p>
@@ -153,7 +153,7 @@
 
 <div id="title">
   <h1>The Sphere</h1>
-  <p>One finger — write in the air. Fist — charge, then open to burst. Two hands — two spheres; spread to grow, close to collide. Thumb out — particles align along it.</p>
+  <p>Pinch to write, unpinch between letters. Curl and uncurl to resize; throw your hand open to burst. Two hands — two spheres. Thumb out — particles align along it.</p>
   <div id="status-line" class="idle">No hand detected</div>
 </div>
 
@@ -167,7 +167,7 @@
     <circle id="charge-ring-bg" cx="55" cy="55" r="47"></circle>
     <circle id="charge-ring-fg" cx="55" cy="55" r="47" stroke-dasharray="295.3" stroke-dashoffset="295.3"></circle>
   </svg>
-  <div id="charge-label">Charging</div>
+  <div id="charge-label">Squeeze</div>
 </div>
 
 <div id="preview-wrap">
@@ -213,13 +213,46 @@ const SPRING_K = 0.02;      // per-frame spring pulling particles back to their 
 const DAMPING = 0.93;       // velocity damping per frame (higher = less friction)
 const EXPLOSION_FORCE = 6.5;
 
-const CHARGE_DURATION_MS = 1100;
-const MIN_CHARGE_TO_FIRE = 0.04;   // ignore accidental micro-clenches
+// Hand openness runs 0 for a tight fist to 1 for a flat open hand, measured
+// as how far the fingertips sit from the wrist relative to the hand size, so
+// it holds up whatever distance you are from the camera.
+const OPEN_MIN_RATIO = 1.00, OPEN_MAX_RATIO = 2.00;
 
-const MOVE_SMOOTH = 0.12;
+// A finger counts as extended past this much of the hand size. Curled
+// fingertips sit around 1.0-1.3 and extended ones around 1.9-2.1, so the
+// midpoint separates them with room on both sides.
+const FINGER_EXTENDED_RATIO = 1.6;
+
+// Writing needs a looser bar than the general one above. Pinching the thumb
+// to the index tip curls the index enough to fail the strict test, so a
+// pinch would otherwise be read as a closed hand with the thumb out - the
+// align gesture - and writing would flip the sphere into a bar mid-word.
+const INDEX_WRITE_RATIO = 1.35;
+
+// ...and it must also lead the other fingers by this much. An absolute reach
+// alone is not enough: a hand curling uniformly passes through a shape where
+// the index happens to clear the bar while the rest are tucked, and the
+// sphere would snap to cursor size halfway through a resize.
+const INDEX_LEAD_RATIO = 1.25;
+
+// How far past its own base joint the thumb must sit to count as out. Kept
+// well above 1 so a fist with a slightly protruding thumb is still a fist.
+const THUMB_OUT_RATIO = 1.25;
+const OPEN_SMOOTH = 0.35;
+const FIST_SCALE = 0.28;        // sphere size at a fully closed fist
+
+// A burst needs a deliberate flick open, not just any opening. Curling and
+// uncurling slowly only resizes the sphere; throwing the hand open fires it.
+const BURST_OPEN_RATE = 2.4;    // openness gained per second
+const BURST_FROM_BELOW = 0.45;  // must start at least this closed
+const BURST_TO_ABOVE = 0.62;    // and end at least this open
+const BURST_COOLDOWN_MS = 650;
+const SQUEEZE_SHOW = 0.34;      // squeeze needed before the ring appears
+
+const MOVE_SMOOTH = 0.18;
 const ROT_SENSITIVITY = 4.2;
 const ROT_SMOOTH = 0.25;
-const SCALE_SMOOTH = 0.08;
+const SCALE_SMOOTH = 0.15;   // responsive enough that curling resizes as you curl
 const SCALE_MIN = 0.42, SCALE_MAX = 1.30;
 
 // Distance between the two hands, in MediaPipe's normalized units, mapped to
@@ -246,6 +279,17 @@ const ALIGN_THICKNESS = 0.24;
 const INK_MAX_POINTS = 26000;
 const INK_SPACING = 0.03;      // world gap between deposited ink points
 const INK_MIN_MOVE = 0.004;    // ignore jitter smaller than this
+
+// Pen down. An extended index finger on its own only moves the cursor - ink
+// is laid down while the thumb is pinched against the index finger. Without
+// a pen-up signal every journey between letters got inked too, so a written
+// word came out as one continuous tangle.
+const PINCH_THRESHOLD = 0.45;  // thumb-to-index distance, relative to hand size
+
+// A fingertip cannot really travel this far between two frames; when it
+// appears to, tracking glitched. Break the stroke rather than drawing the
+// long straight line that the jump would otherwise produce.
+const INK_JUMP_BREAK = 1.1;    // world units
 const INK_COLOR = new THREE.Color(0xff5fd2);
 // Ink sits nearer the camera than the spheres so writing always reads on top.
 const INK_Z = 0.7;
@@ -478,6 +522,7 @@ function drawInkTo(x, y) {
     const dx = x - lastInkX, dy = y - lastInkY;
     const dist = Math.hypot(dx, dy);
     if (dist < INK_MIN_MOVE) return;   // holding still should not pile up points
+    if (dist > INK_JUMP_BREAK) { lastInkX = x; lastInkY = y; return; }
     const steps = Math.min(200, Math.max(1, Math.round(dist / INK_SPACING)));
     for (let s = 1; s <= steps; s++) pushInk(lastInkX + dx * (s / steps), lastInkY + dy * (s / steps));
   }
@@ -591,25 +636,55 @@ function landmarkDist(a, b) {
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-/* Rough, rotation-tolerant heuristic: a finger counts as "extended" if its
-   tip sits noticeably farther from the wrist than its base knuckle does.
-   Not anatomically perfect, but good enough for a live demo. */
+/* Measures each finger against the hand size rather than against its own
+   knuckle. Comparing tip-to-wrist with knuckle-to-wrist looks reasonable but
+   a curled fingertip already sits farther from the wrist than its knuckle
+   does, so curled fingers read as extended. Dividing by the hand size instead
+   separates the two cleanly and stays stable at any distance from the camera. */
+function fingerReaches(lm) {
+  const handScale = Math.max(1e-4, landmarkDist(lm[0], lm[9]));
+  return [8, 12, 16, 20].map((tip) => landmarkDist(lm[tip], lm[0]) / handScale);
+}
+
 function getFingerStates(lm) {
-  const wrist = lm[0];
-  const fingers = [[8, 5], [12, 9], [16, 13], [20, 17]]; // index, middle, ring, pinky
-  const extended = fingers.map(([tipIdx, mcpIdx]) =>
-    landmarkDist(lm[tipIdx], wrist) > landmarkDist(lm[mcpIdx], wrist) * 1.15);
-  const thumbOut = landmarkDist(lm[4], lm[17]) > landmarkDist(lm[2], lm[17]) * 1.05;
-  return { extended, thumbOut };
+  const reaches = fingerReaches(lm);
+  const extended = reaches.map((r) => r > FINGER_EXTENDED_RATIO);
+  const thumbOut = landmarkDist(lm[4], lm[17]) > landmarkDist(lm[2], lm[17]) * THUMB_OUT_RATIO;
+  return { extended, thumbOut, reaches };
 }
 
 const anyExtended = (s) => s.extended.some(Boolean);
 
-// Index finger alone: the writing pose.
-const isPointing = (s) => s.extended[0] && !s.extended[1] && !s.extended[2] && !s.extended[3];
+/* How open the hand is, 0 (tight fist) to 1 (flat open hand). Averaged over
+   the four fingers and divided by the hand size so the reading does not drift
+   as the player moves toward or away from the camera. */
+function handOpenness(lm) {
+  const wrist = lm[0];
+  const handScale = Math.max(1e-4, landmarkDist(wrist, lm[9]));
+  const tips = [8, 12, 16, 20];
+  let sum = 0;
+  for (const tip of tips) {
+    const ratio = landmarkDist(lm[tip], wrist) / handScale;
+    sum += THREE.MathUtils.clamp((ratio - OPEN_MIN_RATIO) / (OPEN_MAX_RATIO - OPEN_MIN_RATIO), 0, 1);
+  }
+  return sum / tips.length;
+}
 
-// Everything curled in, thumb tucked: the charge pose.
-const isFist = (s) => !anyExtended(s) && !s.thumbOut;
+/* Thumb pinched against the index finger: the pen-down signal for writing. */
+function pinchAmount(lm) {
+  const handScale = Math.max(1e-4, landmarkDist(lm[0], lm[9]));
+  return landmarkDist(lm[4], lm[8]) / handScale;
+}
+
+
+// The writing posture: index finger out on its own. The sphere stays shrunk
+// to a cursor for as long as this holds, marking or not, so it never
+// inflates over the letters while the pen is lifted between them.
+function isWritingPosture(s) {
+  const [index, middle, ring, pinky] = s.reaches;
+  return index > INDEX_WRITE_RATIO
+    && index > Math.max(middle, ring, pinky) * INDEX_LEAD_RATIO;
+}
 
 // Thumb out with the fingers curled, at any angle - not just thumbs-up.
 const isThumbPose = (s) => s.thumbOut && !anyExtended(s);
@@ -639,9 +714,12 @@ let statusDetail = '';
 let spinX = 0, spinY = 0;
 let prevHandNX = null, prevHandNY = null;
 
-let fistCharging = false;
-let fistStartTime = 0;
-let chargeLevel = 0;
+let openness = 0.6;          // smoothed, drives sphere size
+let squeeze = 0;             // 1 - openness, shown on the ring
+let lastOpenSample = performance.now();
+let lastBurstTime = 0;
+let squeezeAudioOn = false;
+let writingNow = false;
 
 let alignActive = false;
 let alignAngle = 0;
@@ -663,24 +741,46 @@ function showError(msg) {
   loadingEl.style.display = 'none';
 }
 
-/* Clench to charge, open to fire. Holding longer throws the particles further. */
-function handleFist(nowFist, powerMultiplier) {
-  if (nowFist && !fistCharging) {
-    fistStartTime = performance.now();
-    AudioEngine.chargeStart();
+/* Tracks how open the hand is and fires a burst on a fast release.
+
+   Curling and uncurling gradually just resizes the sphere; only a flick open
+   - fast enough, from closed enough, to open enough - detonates it. Burst
+   power comes from how tightly the hand was squeezed beforehand, so a light
+   flick pops and a hard clench throws the particles a long way. */
+function updateOpenness(raw, powerMultiplier) {
+  const now = performance.now();
+  const dt = Math.max(0.001, (now - lastOpenSample) / 1000);
+  lastOpenSample = now;
+
+  const previous = openness;
+  const rate = (raw - previous) / dt;
+  openness += (raw - previous) * OPEN_SMOOTH;
+  squeeze = 1 - openness;
+
+  const flickedOpen = rate > BURST_OPEN_RATE
+    && previous < BURST_FROM_BELOW
+    && raw > BURST_TO_ABOVE
+    && now - lastBurstTime > BURST_COOLDOWN_MS;
+
+  if (flickedOpen) {
+    lastBurstTime = now;
+    const power = THREE.MathUtils.clamp((1 - previous) * powerMultiplier, 0.3, 1.4);
+    explodeAll(power);
+    AudioEngine.explosion(Math.min(1, power));
+    return true;
   }
-  if (nowFist) {
-    chargeLevel = Math.min(1, (performance.now() - fistStartTime) / CHARGE_DURATION_MS);
-    AudioEngine.chargeUpdate(chargeLevel);
-  } else if (fistCharging) {
-    if (chargeLevel > MIN_CHARGE_TO_FIRE) {
-      explodeAll(chargeLevel * powerMultiplier);
-      AudioEngine.explosion(chargeLevel);
-    }
+  return false;
+}
+
+/* A rising whine while the hand closes, so squeezing feels like loading. */
+function updateSqueezeAudio(active) {
+  if (active && squeeze > SQUEEZE_SHOW) {
+    if (!squeezeAudioOn) { AudioEngine.chargeStart(); squeezeAudioOn = true; }
+    AudioEngine.chargeUpdate(squeeze);
+  } else if (squeezeAudioOn) {
     AudioEngine.chargeStop();
-    chargeLevel = 0;
+    squeezeAudioOn = false;
   }
-  fistCharging = nowFist;
 }
 
 function onHandResults(results) {
@@ -723,10 +823,12 @@ function onHandResults(results) {
     clusters[0].targetScale = scale;
     clusters[1].targetScale = scale;
 
-    const statesA = getFingerStates(hands[0]);
-    const statesB = getFingerStates(hands[1]);
-    const bothFists = isFist(statesA) && isFist(statesB);
-    handleFist(bothFists, 1.35); // two-handed burst hits harder
+    // Size comes from the gap between the hands here, so openness is used only
+    // to catch a two-handed flick, which hits harder than a one-handed one.
+    const bothOpenness = (handOpenness(hands[0]) + handOpenness(hands[1])) / 2;
+    const burst = updateOpenness(bothOpenness, 1.35);
+    updateSqueezeAudio(true);
+    writingNow = false;
 
     const now = performance.now();
     if (dist < COLLIDE_DIST && now - lastCollideTime > COLLIDE_COOLDOWN_MS) {
@@ -734,8 +836,10 @@ function onHandResults(results) {
       explodeAll(0.85);
       AudioEngine.explosion(0.85);
       statusDetail = 'collision';
+    } else if (burst) {
+      statusDetail = 'burst';
     } else {
-      statusDetail = bothFists ? 'charging' : (t > 0.6 ? 'growing' : 'closing in');
+      statusDetail = squeeze > SQUEEZE_SHOW ? 'squeezing' : (t > 0.6 ? 'growing' : 'closing in');
     }
 
     alignActive = false;
@@ -747,17 +851,25 @@ function onHandResults(results) {
     const world = handToWorld(lm[9]);
     const states = getFingerStates(lm);
 
-    const pointing = isPointing(states);
-    const thumbing = isThumbPose(states);
-    const fisted = isFist(states);
+    // Pen down only while the thumb is pinched to the index finger. Pointing
+    // with the finger alone moves the cursor without leaving a mark, which is
+    // what puts the gaps between letters.
+    const pointing = isWritingPosture(states);
+    const penDown = pointing && pinchAmount(lm) < PINCH_THRESHOLD;
+    writingNow = pointing;
 
-    // Writing: deposit ink wherever the index fingertip goes.
-    if (pointing) {
+    // Writing wins over the thumb bar. A pinched hand looks a lot like a
+    // closed hand with the thumb out, and without this the sphere would
+    // stretch into a bar every time a letter was drawn.
+    const thumbing = !pointing && isThumbPose(states);
+
+    if (penDown) {
       const tip = handToWorld(lm[8]);
       drawInkTo(tip.x, tip.y);
       statusDetail = 'writing';
     } else {
       endStroke();
+      if (pointing && !thumbing) statusDetail = 'pen up';
     }
 
     // Thumb out: particles string into a bar along the thumb and follow it.
@@ -770,19 +882,30 @@ function onHandResults(results) {
       statusDetail = 'aligned to thumb';
     } else {
       alignActive = false;
-      clusters[0].target.set(world.x, world.y, 0);
-      clusters[1].target.set(world.x, world.y, 0);
+      // In writing posture the cursor rides the fingertip, not the palm.
+      // Parked on the palm it sits in the middle of the finished word and
+      // covers it; on the fingertip it behaves like the nib of the pen.
+      const anchor = pointing ? handToWorld(lm[8]) : world;
+      clusters[0].target.set(anchor.x, anchor.y, 0);
+      clusters[1].target.set(anchor.x, anchor.y, 0);
     }
 
-    const singleScale = pointing ? WRITE_SCALE : SINGLE_SCALE;
+    // Curl and uncurl to resize: openness maps straight onto sphere size, so
+    // the sphere tracks the hand continuously instead of snapping between two
+    // states. Writing overrides it with the small cursor.
+    const burst = updateOpenness(handOpenness(lm), 1.0);
+    updateSqueezeAudio(!pointing);
+
+    const openScale = FIST_SCALE + openness * (SINGLE_SCALE - FIST_SCALE);
+    const singleScale = pointing ? WRITE_SCALE : openScale;
     clusters[0].targetScale = singleScale;
     clusters[1].targetScale = singleScale;
 
-    handleFist(fisted, 1.0);
-    if (fisted) statusDetail = 'charging';
+    if (burst) statusDetail = 'burst';
+    else if (!pointing && !thumbing && squeeze > SQUEEZE_SHOW) statusDetail = 'squeezing';
 
     // Spin only when the hand is open and not busy with another gesture.
-    if (!pointing && !thumbing && !fisted) {
+    if (!pointing && !thumbing && squeeze < SQUEEZE_SHOW) {
       if (prevHandNX !== null) {
         spinY += (world.nx - prevHandNX) * ROT_SENSITIVITY;
         spinX += -(world.ny - prevHandNY) * ROT_SENSITIVITY;
@@ -800,7 +923,11 @@ function onHandResults(results) {
     clusters[1].target.set(0, 0, 0);
     clusters[0].targetScale = SINGLE_SCALE;
     clusters[1].targetScale = SINGLE_SCALE;
-    handleFist(false, 1.0);
+    openness += (0.6 - openness) * OPEN_SMOOTH;  // relax back to a neutral size
+    squeeze = 1 - openness;
+    lastOpenSample = performance.now();
+    updateSqueezeAudio(false);
+    writingNow = false;
     alignActive = false;
     endStroke();
     statusDetail = '';
@@ -959,10 +1086,10 @@ function animate() {
     cl.group.rotation.z += (targetRotZ - cl.group.rotation.z) * ROT_SMOOTH;
   }
 
-  /* --- charge ring UI --- */
-  if (fistCharging) {
+  /* --- squeeze ring: fills as the hand closes, empties as it opens --- */
+  if (mode !== 'idle' && !writingNow && squeeze > SQUEEZE_SHOW) {
     chargeRingWrap.classList.add('visible');
-    chargeRingFg.setAttribute('stroke-dashoffset', String(RING_CIRCUMFERENCE * (1 - chargeLevel)));
+    chargeRingFg.setAttribute('stroke-dashoffset', String(RING_CIRCUMFERENCE * (1 - squeeze)));
   } else {
     chargeRingWrap.classList.remove('visible');
   }
