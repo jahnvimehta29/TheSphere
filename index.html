@@ -54,23 +54,6 @@
   }
   body.webcam-bg-on #preview-canvas { display: none; }
 
-  /* Fist charge ring, centered on screen */
-  #charge-ring-wrap {
-    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    z-index: 4; opacity: 0; transition: opacity .2s ease; pointer-events: none;
-  }
-  #charge-ring-wrap.visible { opacity: 1; }
-  #charge-ring-wrap svg { width: 110px; height: 110px; transform: rotate(-90deg); }
-  #charge-ring-bg { fill: none; stroke: rgba(255,255,255,.12); stroke-width: 6; }
-  #charge-ring-fg {
-    fill: none; stroke: #ff5fd2; stroke-width: 6; stroke-linecap: round;
-    filter: drop-shadow(0 0 6px rgba(255,95,210,.7));
-  }
-  #charge-label {
-    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    font-family: system-ui, sans-serif; font-size: 11px; letter-spacing: 1px;
-    color: #ff5fd2; text-transform: uppercase; font-weight: 600;
-  }
 
   #loading {
     position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -131,7 +114,8 @@
     <h2>Ready to play? 🔮</h2>
     <p class="intro-body">No controller, no keyboard — just your hands. Everything you do to the sphere, you do in the air.</p>
     <ul class="intro-list">
-      <li>🤏 Pinch thumb to finger — write in the air; unpinch to move between letters</li>
+      <li>🤏 <b>Pinch</b> thumb to fingertip to draw — unpinch to move between letters</li>
+      <li>👉 Point without pinching and the sphere gets out of the way</li>
       <li>✊ Curl your hand slowly — the sphere shrinks; open slowly — it grows</li>
       <li>💥 Throw your hand open all at once — it bursts</li>
       <li>🙌 Show two hands — two spheres; spread to grow, together to collide</li>
@@ -153,7 +137,7 @@
 
 <div id="title">
   <h1>The Sphere</h1>
-  <p>Pinch to write, unpinch between letters. Curl and uncurl to resize; throw your hand open to burst. Two hands — two spheres. Thumb out — particles align along it.</p>
+  <p>Point a finger and pinch to draw; unpinch between letters. Curl and uncurl to resize; throw your hand open to burst. Two hands — stretch and roll it. Thumb out — particles align along it.</p>
   <div id="status-line" class="idle">No hand detected</div>
 </div>
 
@@ -162,13 +146,6 @@
   <button id="webcamBgBtn" class="pill-btn">Camera Background</button>
 </div>
 
-<div id="charge-ring-wrap">
-  <svg viewBox="0 0 110 110">
-    <circle id="charge-ring-bg" cx="55" cy="55" r="47"></circle>
-    <circle id="charge-ring-fg" cx="55" cy="55" r="47" stroke-dasharray="295.3" stroke-dashoffset="295.3"></circle>
-  </svg>
-  <div id="charge-label">Squeeze</div>
-</div>
 
 <div id="preview-wrap">
   <video id="preview-video" autoplay playsinline muted></video>
@@ -249,11 +226,19 @@ const BURST_TO_ABOVE = 0.62;    // and end at least this open
 const BURST_COOLDOWN_MS = 650;
 const SQUEEZE_SHOW = 0.34;      // squeeze needed before the ring appears
 
-const MOVE_SMOOTH = 0.18;
+const MOVE_SMOOTH = 0.24;   // snappy enough that the sphere feels stuck to the hand
 const ROT_SENSITIVITY = 4.2;
 const ROT_SMOOTH = 0.25;
 const SCALE_SMOOTH = 0.15;   // responsive enough that curling resizes as you curl
 const SCALE_MIN = 0.42, SCALE_MAX = 1.30;
+
+// Two hands get their own, far larger range. Spreading them apart pulls the
+// two halves of the field wide and swells them until they merge into one
+// stretched mass, which is the point of the gesture.
+const TWO_HAND_SCALE_MIN = 0.6, TWO_HAND_SCALE_MAX = 2.3;
+
+// Constant slow spin so the field is never completely static.
+const IDLE_DRIFT = 0.0016;
 
 // Distance between the two hands, in MediaPipe's normalized units, mapped to
 // sphere size. Below COLLIDE_DIST the two spheres are touching and detonate.
@@ -265,7 +250,7 @@ const PLANE_HALF_W = 3.1, PLANE_HALF_H = 1.9;  // world extent the camera frame 
 
 // A lone sphere gets to be bigger than either of the two-handed pair, which
 // have to stay small enough to read as separate objects when held apart.
-const SINGLE_SCALE = 1.55;
+const SINGLE_SCALE = 1.90;
 
 // While writing, the spheres collapse to a small marker that rides along with
 // the hand. At full size they sit directly under the fingertip and swallow the
@@ -507,6 +492,30 @@ const inkPoints = new THREE.Points(inkGeometry, inkMaterial);
 inkPoints.frustumCulled = false;
 scene.add(inkPoints);
 
+/* Pen cursor: one bright point at the fingertip. Writing failed silently
+   without it - there was no way to tell whether the pen was down, so a
+   stroke that did not register looked identical to one that did. Solid and
+   large while marking, small and dim while only moving. */
+const cursorGeometry = new THREE.BufferGeometry();
+cursorGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, INK_Z + 0.05]), 3));
+const cursorMaterial = new THREE.PointsMaterial({
+  size: 0.18, map: particleTexture, transparent: true, depthWrite: false,
+  color: 0xffffff, blending: THREE.AdditiveBlending,
+});
+const penCursor = new THREE.Points(cursorGeometry, cursorMaterial);
+penCursor.frustumCulled = false;
+penCursor.visible = false;
+scene.add(penCursor);
+
+function showCursor(x, y, down) {
+  const attr = cursorGeometry.getAttribute('position');
+  attr.setXYZ(0, x, y, INK_Z + 0.05);
+  attr.needsUpdate = true;
+  penCursor.visible = true;
+  cursorMaterial.size = down ? 0.34 : 0.16;
+  cursorMaterial.color.set(down ? 0xffffff : 0x6a6a7d);
+}
+
 function pushInk(x, y) {
   if (inkCount >= INK_MAX_POINTS) return;
   const k = inkCount * 3;
@@ -670,10 +679,17 @@ function handOpenness(lm) {
   return sum / tips.length;
 }
 
+/* Screen-plane distance. MediaPipe reports a z for every landmark, but it is
+   noisy between two fingertips that are nearly touching - enough that a real
+   pinch can measure as open. Pinching is judged on what the camera sees. */
+function landmarkDist2D(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
 /* Thumb pinched against the index finger: the pen-down signal for writing. */
 function pinchAmount(lm) {
-  const handScale = Math.max(1e-4, landmarkDist(lm[0], lm[9]));
-  return landmarkDist(lm[4], lm[8]) / handScale;
+  const handScale = Math.max(1e-4, landmarkDist2D(lm[0], lm[9]));
+  return landmarkDist2D(lm[4], lm[8]) / handScale;
 }
 
 
@@ -724,16 +740,15 @@ let writingNow = false;
 let alignActive = false;
 let alignAngle = 0;
 
+let twoHandTilt = 0;
 let lastCollideTime = 0;
 let lastHandSeenTime = performance.now();
 
 const statusEl = document.getElementById('status-line');
 const loadingEl = document.getElementById('loading');
 const errorBanner = document.getElementById('error-banner');
-const chargeRingWrap = document.getElementById('charge-ring-wrap');
-const chargeRingFg = document.getElementById('charge-ring-fg');
+
 const idleHintEl = document.getElementById('idle-hint');
-const RING_CIRCUMFERENCE = 2 * Math.PI * 47;
 
 function showError(msg) {
   errorBanner.textContent = msg;
@@ -819,9 +834,16 @@ function onHandResults(results) {
 
     const dist = Math.hypot(hands[0][9].x - hands[1][9].x, hands[0][9].y - hands[1][9].y);
     const t = THREE.MathUtils.clamp((dist - HAND_DIST_MIN) / (HAND_DIST_MAX - HAND_DIST_MIN), 0, 1);
-    const scale = SCALE_MIN + t * (SCALE_MAX - SCALE_MIN);
+    const scale = TWO_HAND_SCALE_MIN + t * (TWO_HAND_SCALE_MAX - TWO_HAND_SCALE_MIN);
     clusters[0].targetScale = scale;
     clusters[1].targetScale = scale;
+
+    // Turning the hands like a wheel rolls the whole field. Folded to a tilt
+    // rather than a bearing, so which hand is which does not flip it over.
+    let tilt = Math.atan2(worldB.y - worldA.y, worldB.x - worldA.x);
+    if (tilt > Math.PI / 2) tilt -= Math.PI;
+    if (tilt < -Math.PI / 2) tilt += Math.PI;
+    twoHandTilt = tilt;
 
     // Size comes from the gap between the hands here, so openness is used only
     // to catch a two-handed flick, which hits harder than a one-handed one.
@@ -844,6 +866,7 @@ function onHandResults(results) {
 
     alignActive = false;
     endStroke();
+    penCursor.visible = false;
 
   } else if (hands.length === 1) {
     mode = 'single';
@@ -863,13 +886,14 @@ function onHandResults(results) {
     // stretch into a bar every time a letter was drawn.
     const thumbing = !pointing && isThumbPose(states);
 
-    if (penDown) {
+    if (pointing) {
       const tip = handToWorld(lm[8]);
-      drawInkTo(tip.x, tip.y);
-      statusDetail = 'writing';
+      showCursor(tip.x, tip.y, penDown);
+      if (penDown) { drawInkTo(tip.x, tip.y); statusDetail = 'writing'; }
+      else { endStroke(); statusDetail = 'pen up - pinch to write'; }
     } else {
       endStroke();
-      if (pointing && !thumbing) statusDetail = 'pen up';
+      penCursor.visible = false;
     }
 
     // Thumb out: particles string into a bar along the thumb and follow it.
@@ -930,6 +954,7 @@ function onHandResults(results) {
     writingNow = false;
     alignActive = false;
     endStroke();
+    penCursor.visible = false;
     statusDetail = '';
   }
 
@@ -1066,7 +1091,7 @@ function updateCluster(cl) {
 function animate() {
   requestAnimationFrame(animate);
 
-  if (mode === 'idle') spinY += 0.0016; // slow drift when nobody is playing
+  spinY += IDLE_DRIFT; // never fully still, in any mode
 
   /* --- idle "come play" invitation once nobody's hand has been seen for a while --- */
   const idleFor = performance.now() - lastHandSeenTime;
@@ -1077,22 +1102,18 @@ function animate() {
   // the free spin is eased out and rotation.z carries the thumb angle instead.
   const targetRotX = alignActive ? 0 : spinX;
   const targetRotY = alignActive ? 0 : spinY;
-  const targetRotZ = alignActive ? alignAngle : 0;
+  const targetRotZ = alignActive ? alignAngle : (mode === 'two' ? twoHandTilt : 0);
 
   for (const cl of clusters) {
+    // The spheres get out of the way entirely while writing - even shrunk to a
+    // cursor they sat over the letters being drawn.
+    cl.group.visible = !writingNow;
     updateCluster(cl);
     cl.group.rotation.x += (targetRotX - cl.group.rotation.x) * ROT_SMOOTH;
     cl.group.rotation.y += (targetRotY - cl.group.rotation.y) * ROT_SMOOTH;
     cl.group.rotation.z += (targetRotZ - cl.group.rotation.z) * ROT_SMOOTH;
   }
 
-  /* --- squeeze ring: fills as the hand closes, empties as it opens --- */
-  if (mode !== 'idle' && !writingNow && squeeze > SQUEEZE_SHOW) {
-    chargeRingWrap.classList.add('visible');
-    chargeRingFg.setAttribute('stroke-dashoffset', String(RING_CIRCUMFERENCE * (1 - squeeze)));
-  } else {
-    chargeRingWrap.classList.remove('visible');
-  }
 
   if (webcamBgOn) {
     renderer.clear(true, true, true); // fully transparent so the live camera feed shows through
