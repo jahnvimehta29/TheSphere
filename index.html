@@ -224,7 +224,7 @@ const BURST_OPEN_RATE = 2.4;    // openness gained per second
 const BURST_FROM_BELOW = 0.45;  // must start at least this closed
 const BURST_TO_ABOVE = 0.62;    // and end at least this open
 const BURST_COOLDOWN_MS = 650;
-const SQUEEZE_SHOW = 0.34;      // squeeze needed before the ring appears
+const SQUEEZE_SHOW = 0.34;      // how closed the hand must be to count as closing
 
 const MOVE_SMOOTH = 0.24;   // snappy enough that the sphere feels stuck to the hand
 const ROT_SENSITIVITY = 4.2;
@@ -731,7 +731,7 @@ let spinX = 0, spinY = 0;
 let prevHandNX = null, prevHandNY = null;
 
 let openness = 0.6;          // smoothed, drives sphere size
-let squeeze = 0;             // 1 - openness, shown on the ring
+let squeeze = 0;             // 1 - openness
 let lastOpenSample = performance.now();
 let lastBurstTime = 0;
 let squeezeAudioOn = false;
@@ -861,7 +861,7 @@ function onHandResults(results) {
     } else if (burst) {
       statusDetail = 'burst';
     } else {
-      statusDetail = squeeze > SQUEEZE_SHOW ? 'squeezing' : (t > 0.6 ? 'growing' : 'closing in');
+      statusDetail = squeeze > SQUEEZE_SHOW ? 'closing' : (t > 0.6 ? 'growing' : 'closing in');
     }
 
     alignActive = false;
@@ -926,7 +926,7 @@ function onHandResults(results) {
     clusters[1].targetScale = singleScale;
 
     if (burst) statusDetail = 'burst';
-    else if (!pointing && !thumbing && squeeze > SQUEEZE_SHOW) statusDetail = 'squeezing';
+    else if (!pointing && !thumbing && squeeze > SQUEEZE_SHOW) statusDetail = 'closing';
 
     // Spin only when the hand is open and not busy with another gesture.
     if (!pointing && !thumbing && squeeze < SQUEEZE_SHOW) {
