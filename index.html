@@ -269,7 +269,19 @@ const INK_MIN_MOVE = 0.004;    // ignore jitter smaller than this
 // is laid down while the thumb is pinched against the index finger. Without
 // a pen-up signal every journey between letters got inked too, so a written
 // word came out as one continuous tangle.
-const PINCH_THRESHOLD = 0.45;  // thumb-to-index distance, relative to hand size
+// Hysteresis rather than one threshold: real tracking noise sits right on
+// top of a single boundary and flickers pen state on and off several times
+// a second, chopping a stroke into disconnected fragments. A wider gap
+// between the down and up thresholds means the pinch has to clearly commit
+// each way before the pen state actually flips.
+const PINCH_DOWN_THRESHOLD = 0.40;  // pinch this close to enter pen-down
+const PINCH_UP_THRESHOLD = 0.58;    // and open this far to leave it
+
+// Exponential smoothing on the fingertip used for drawing. Real webcam
+// tracking jitters by a few percent of hand size frame to frame - small on
+// its own, but squiggly once it is the only thing drawing a letter. Lower
+// = smoother but laggier; kept high enough that fast strokes still track.
+const TIP_SMOOTH = 0.45;
 
 // A fingertip cannot really travel this far between two frames; when it
 // appears to, tracking glitched. Break the stroke rather than drawing the
@@ -486,7 +498,7 @@ const inkMaterial = new THREE.PointsMaterial({
   transparent: true,
   depthWrite: false,
   vertexColors: true,
-  blending: THREE.AdditiveBlending,
+  blending: THREE.NormalBlending, // additive here would brighten every static point a little more each frame it is redrawn, running away to solid white within seconds
 });
 const inkPoints = new THREE.Points(inkGeometry, inkMaterial);
 inkPoints.frustumCulled = false;
@@ -500,7 +512,7 @@ const cursorGeometry = new THREE.BufferGeometry();
 cursorGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, INK_Z + 0.05]), 3));
 const cursorMaterial = new THREE.PointsMaterial({
   size: 0.18, map: particleTexture, transparent: true, depthWrite: false,
-  color: 0xffffff, blending: THREE.AdditiveBlending,
+  color: 0xffffff, blending: THREE.NormalBlending, // same reason as the ink material above
 });
 const penCursor = new THREE.Points(cursorGeometry, cursorMaterial);
 penCursor.frustumCulled = false;
@@ -741,6 +753,8 @@ let alignActive = false;
 let alignAngle = 0;
 
 let twoHandTilt = 0;
+let pinchHeld = false;                    // pen state, held across the hysteresis gap
+let smoothTipX = null, smoothTipY = null;  // null means 'not tracking yet, snap to raw'
 let lastCollideTime = 0;
 let lastHandSeenTime = performance.now();
 
@@ -867,6 +881,7 @@ function onHandResults(results) {
     alignActive = false;
     endStroke();
     penCursor.visible = false;
+    pinchHeld = false; smoothTipX = null; smoothTipY = null;
 
   } else if (hands.length === 1) {
     mode = 'single';
@@ -878,7 +893,6 @@ function onHandResults(results) {
     // with the finger alone moves the cursor without leaving a mark, which is
     // what puts the gaps between letters.
     const pointing = isWritingPosture(states);
-    const penDown = pointing && pinchAmount(lm) < PINCH_THRESHOLD;
     writingNow = pointing;
 
     // Writing wins over the thumb bar. A pinched hand looks a lot like a
@@ -887,11 +901,30 @@ function onHandResults(results) {
     const thumbing = !pointing && isThumbPose(states);
 
     if (pointing) {
-      const tip = handToWorld(lm[8]);
-      showCursor(tip.x, tip.y, penDown);
-      if (penDown) { drawInkTo(tip.x, tip.y); statusDetail = 'writing'; }
+      // Hysteresis: commit to pen-down only on a clear close, and stay down
+      // until a clear open, rather than flipping every frame the pinch
+      // distance happens to sit near a single boundary.
+      const pinchDist = pinchAmount(lm);
+      if (!pinchHeld && pinchDist < PINCH_DOWN_THRESHOLD) pinchHeld = true;
+      else if (pinchHeld && pinchDist > PINCH_UP_THRESHOLD) pinchHeld = false;
+      const penDown = pinchHeld;
+
+      // Smooth the raw fingertip before it ever reaches the cursor or the
+      // ink buffer. Snap to the raw position on the first frame of a fresh
+      // point so the cursor does not drift in from wherever it last was.
+      const rawTip = handToWorld(lm[8]);
+      if (smoothTipX === null) { smoothTipX = rawTip.x; smoothTipY = rawTip.y; }
+      else {
+        smoothTipX += (rawTip.x - smoothTipX) * TIP_SMOOTH;
+        smoothTipY += (rawTip.y - smoothTipY) * TIP_SMOOTH;
+      }
+
+      showCursor(smoothTipX, smoothTipY, penDown);
+      if (penDown) { drawInkTo(smoothTipX, smoothTipY); statusDetail = 'writing'; }
       else { endStroke(); statusDetail = 'pen up - pinch to write'; }
     } else {
+      pinchHeld = false;
+      smoothTipX = null; smoothTipY = null;
       endStroke();
       penCursor.visible = false;
     }
@@ -955,6 +988,7 @@ function onHandResults(results) {
     alignActive = false;
     endStroke();
     penCursor.visible = false;
+    pinchHeld = false; smoothTipX = null; smoothTipY = null;
     statusDetail = '';
   }
 
